@@ -134,6 +134,12 @@ Say these before someone asks.
 - One user, no login. Whoever runs the agent's `gh` is the identity.
 - The PR's diff and description are sent to the model provider.
 - `github.com` only. Enterprise Server URLs are rejected at the form.
+- CopilotKit's runtime phones home. With `COPILOTKIT_TELEMETRY_DISABLED`
+  unset it posts usage events to `telemetry.copilotkit.ai` through Segment:
+  runtime instance created, request created, agent stream started, ended,
+  errored, with counts of agents and endpoints and a random anonymous id.
+  No PR content or messages. The root `.env` sets the flag to `true` and
+  `web/next.config.ts` loads that file, so it is off on both servers.
 - Model latency is the wait. CopilotKit adds nothing measurable; the
   model's reasoning does. Thinking off is the lever.
 

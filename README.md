@@ -96,5 +96,10 @@ conventions.
 - `next dev` is measurably slower than `next build && next start`; if the page
   feels sluggish while developing, try the production build.
 - `/preview?big=1` is a 24-file, ~100k-char real PR for diff-viewer profiling.
+- CopilotKit's runtime sends usage events (instance, request and stream
+  lifecycle, agent counts, an anonymous id; never content) to
+  `telemetry.copilotkit.ai` unless `COPILOTKIT_TELEMETRY_DISABLED=true`.
+  The root `.env` sets it and `next.config.ts` loads that file, so both
+  servers read the same `.env`.
 - `reactStrictMode` is off: StrictMode's dev-only double mount aborts
   `@pierre/diffs`' Lit render and leaves diff bodies empty in `next dev`.
