@@ -1,0 +1,11 @@
+node_modules/
+.next/
+.env
+.env.local
+agent/.venv/
+agent/__pycache__/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+agent/evals/reports/
+.DS_Store

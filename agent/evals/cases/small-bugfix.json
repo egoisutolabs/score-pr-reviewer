@@ -1,0 +1,63 @@
+{
+  "name": "small-bugfix",
+  "description": "A small Python HTTP client gains retry with exponential backoff on 5xx responses. One source file, one test file. The brief should name the retry/backoff behaviour, keep risk low-to-medium, and classify the test file as a test.",
+  "pr": {
+    "owner": "acme",
+    "repo": "billing-sdk",
+    "number": 318,
+    "url": "https://github.com/acme/billing-sdk/pull/318",
+    "title": "Retry GET requests on 5xx with exponential backoff",
+    "body": "Intermittent 502/503s from the billing gateway during deploys were surfacing as hard failures in the SDK.\n\n`Client.get` now retries up to 4 times on any 5xx with full-jitter exponential backoff (0.5s base, 4s cap). 4xx responses are still raised immediately. Tests cover retry-then-succeed, giving up after the last attempt, and no retry on 404.\n\nFixes #311.",
+    "author": "mira-k",
+    "base_ref": "main",
+    "head_ref": "mira/retry-5xx",
+    "state": "OPEN",
+    "additions": 56,
+    "deletions": 6,
+    "changed_files": 2,
+    "created_at": "2026-08-21T14:03:11Z",
+    "labels": [
+      "bug",
+      "networking"
+    ]
+  },
+  "files": [
+    {
+      "path": "httpclient/client.py",
+      "previous_path": null,
+      "status": "modified",
+      "additions": 22,
+      "deletions": 5,
+      "patch": "diff --git a/httpclient/client.py b/httpclient/client.py\nindex 3f1c2a9..8be41d7 100644\n--- a/httpclient/client.py\n+++ b/httpclient/client.py\n@@ -1,9 +1,14 @@\n from __future__ import annotations\n \n import json\n+import random\n+import time\n import urllib.error\n import urllib.request\n \n+MAX_ATTEMPTS = 4\n+BASE_DELAY = 0.5\n+\n \n class HTTPError(Exception):\n     def __init__(self, status: int, body: str) -> None:\n@@ -17,11 +22,23 @@ class Client:\n         self._base_url = base_url.rstrip(\"/\")\n         self._timeout = timeout\n \n+    @staticmethod\n+    def _backoff(attempt: int) -> float:\n+        # Full jitter keeps a fleet of clients from retrying in lockstep after a\n+        # shared outage; the cap keeps four attempts under roughly eight seconds.\n+        return random.uniform(0, min(BASE_DELAY * (2**attempt), 4.0))\n+\n     def get(self, path: str) -> dict:\n         url = f\"{self._base_url}/{path.lstrip('/')}\"\n         req = urllib.request.Request(url, headers={\"Accept\": \"application/json\"})\n-        try:\n-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:\n-                return json.loads(resp.read().decode(\"utf-8\"))\n-        except urllib.error.HTTPError as exc:\n-            raise HTTPError(exc.code, exc.read().decode(\"utf-8\", \"replace\")) from exc\n+        for attempt in range(MAX_ATTEMPTS):\n+            try:\n+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:\n+                    return json.loads(resp.read().decode(\"utf-8\"))\n+            except urllib.error.HTTPError as exc:\n+                # Only 5xx is retried: a 4xx will not change on a second try, and\n+                # honoring 429 properly needs Retry-After, which is out of scope.\n+                if exc.code < 500 or attempt == MAX_ATTEMPTS - 1:\n+                    raise HTTPError(exc.code, exc.read().decode(\"utf-8\", \"replace\")) from exc\n+                time.sleep(self._backoff(attempt))\n+        raise AssertionError(\"retry loop exited without a response\")\n",
+      "language": "py"
+    },
+    {
+      "path": "tests/test_client.py",
+      "previous_path": null,
+      "status": "modified",
+      "additions": 34,
+      "deletions": 1,
+      "patch": "diff --git a/tests/test_client.py b/tests/test_client.py\nindex 91ac0de..c47b3e2 100644\n--- a/tests/test_client.py\n+++ b/tests/test_client.py\n@@ -1,6 +1,9 @@\n+import io\n import json\n+import urllib.error\n from unittest import mock\n \n import pytest\n \n-from httpclient.client import Client, HTTPError\n+from httpclient import client as client_module\n+from httpclient.client import MAX_ATTEMPTS, Client, HTTPError\n@@ -13,6 +16,36 @@ def _response(status: int, payload: dict) -> mock.MagicMock:\n     return resp\n \n \n+def _http_error(status: int) -> urllib.error.HTTPError:\n+    return urllib.error.HTTPError(\"https://api.example.com/x\", status, \"err\", {}, io.BytesIO(b\"{}\"))\n+\n+\n def test_get_parses_json() -> None:\n     with mock.patch(\"urllib.request.urlopen\", return_value=_response(200, {\"ok\": True})):\n         assert Client(\"https://api.example.com\").get(\"/health\") == {\"ok\": True}\n+\n+\n+def test_get_retries_5xx_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:\n+    monkeypatch.setattr(client_module.time, \"sleep\", lambda _s: None)\n+    urlopen = mock.Mock(side_effect=[_http_error(503), _http_error(502), _response(200, {\"ok\": 1})])\n+    with mock.patch(\"urllib.request.urlopen\", urlopen):\n+        assert Client(\"https://api.example.com\").get(\"/x\") == {\"ok\": 1}\n+    assert urlopen.call_count == 3\n+\n+\n+def test_get_gives_up_after_max_attempts(monkeypatch: pytest.MonkeyPatch) -> None:\n+    sleeps: list[float] = []\n+    monkeypatch.setattr(client_module.time, \"sleep\", sleeps.append)\n+    with mock.patch(\"urllib.request.urlopen\", side_effect=_http_error(500)):\n+        with pytest.raises(HTTPError) as info:\n+            Client(\"https://api.example.com\").get(\"/x\")\n+    assert info.value.status == 500\n+    assert len(sleeps) == MAX_ATTEMPTS - 1\n+\n+\n+def test_get_does_not_retry_4xx() -> None:\n+    urlopen = mock.Mock(side_effect=_http_error(404))\n+    with mock.patch(\"urllib.request.urlopen\", urlopen):\n+        with pytest.raises(HTTPError):\n+            Client(\"https://api.example.com\").get(\"/missing\")\n+    assert urlopen.call_count == 1\n",
+      "language": "py"
+    }
+  ],
+  "expect": {
+    "risk_in": [
+      "low",
+      "medium"
+    ],
+    "must_mention": [
+      "retry",
+      "backoff"
+    ],
+    "must_mention_any": [],
+    "must_not_mention": [
+      "As an AI"
+    ],
+    "min_visuals": 1,
+    "roles": {
+      "httpclient/client.py": "core",
+      "tests/test_client.py": "test"
+    }
+  }
+}

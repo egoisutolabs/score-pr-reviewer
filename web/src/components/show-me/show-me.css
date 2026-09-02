@@ -1,0 +1,20 @@
+/* shiki emits per-token `--shiki-light` / `--shiki-dark` custom properties
+   (defaultColor: false); the active scheme chooses which one paints, so a theme
+   switch needs no re-highlight. Backgrounds are ours, not the theme's. */
+.show-me-shiki .shiki,
+.show-me-shiki .shiki span {
+  color: var(--shiki-light);
+}
+
+html.dark .show-me-shiki .shiki,
+html.dark .show-me-shiki .shiki span {
+  color: var(--shiki-dark);
+}
+
+.show-me-shiki .shiki {
+  margin: 0;
+  background: transparent !important;
+  font: inherit;
+  line-height: inherit;
+  white-space: pre;
+}

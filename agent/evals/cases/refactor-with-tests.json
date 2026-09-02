@@ -1,0 +1,84 @@
+{
+  "name": "refactor-with-tests",
+  "description": "A TypeScript formatting module is split in two: lib/format.ts is renamed to lib/format/number.ts and the date helpers move to a new lib/format/date.ts with its own test file; one consumer updates its imports. The brief should describe the split/rename, keep risk low-to-medium, and tag the new test file as a test.",
+  "pr": {
+    "owner": "northwind",
+    "repo": "invoicing-web",
+    "number": 1187,
+    "url": "https://github.com/northwind/invoicing-web/pull/1187",
+    "title": "Split lib/format into number and date modules",
+    "body": "The PDF export worker imports `formatMoney` but pulls in the date helpers too, which throw at import time because the worker bundle has no Intl locale data.\n\n- `src/lib/format.ts` -> `src/lib/format/number.ts` (money + percent only)\n- date helpers move to `src/lib/format/date.ts`\n- `InvoiceRow` updates its imports\n- new `date.test.ts`; while moving `formatRelative` I also made it say `in N days` for future dates instead of `-3 days ago`.",
+    "author": "dvoss",
+    "base_ref": "main",
+    "head_ref": "dvoss/split-format",
+    "state": "OPEN",
+    "additions": 53,
+    "deletions": 17,
+    "changed_files": 4,
+    "created_at": "2026-08-24T09:41:52Z",
+    "labels": [
+      "refactor"
+    ]
+  },
+  "files": [
+    {
+      "path": "src/lib/format/number.ts",
+      "previous_path": "src/lib/format.ts",
+      "status": "renamed",
+      "additions": 2,
+      "deletions": 16,
+      "patch": "diff --git a/src/lib/format.ts b/src/lib/format/number.ts\nsimilarity index 58%\nrename from src/lib/format.ts\nrename to src/lib/format/number.ts\nindex 7d2e1aa..b91f0c3 100644\n--- a/src/lib/format.ts\n+++ b/src/lib/format/number.ts\n@@ -1,4 +1,5 @@\n-// Formatting helpers shared by the invoice table and the PDF export.\n+// Numeric formatting shared by the invoice table and the PDF export.\n+// Date helpers live in ./date so this module stays free of timezone concerns.\n \n const currency = new Intl.NumberFormat(\"en-US\", {\n   style: \"currency\",\n@@ -12,18 +13,3 @@ export function formatMoney(cents: number): string {\n export function formatPercent(ratio: number, digits = 1): string {\n   return `${(ratio * 100).toFixed(digits)}%`;\n }\n-\n-export function formatDate(iso: string): string {\n-  return new Date(iso).toLocaleDateString(\"en-US\", {\n-    year: \"numeric\",\n-    month: \"short\",\n-    day: \"numeric\",\n-  });\n-}\n-\n-export function formatRelative(iso: string, now = Date.now()): string {\n-  const deltaDays = Math.round((now - Date.parse(iso)) / 86_400_000);\n-  if (deltaDays === 0) return \"today\";\n-  if (deltaDays === 1) return \"yesterday\";\n-  return `${deltaDays} days ago`;\n-}\n",
+      "language": "ts"
+    },
+    {
+      "path": "src/lib/format/date.ts",
+      "previous_path": null,
+      "status": "added",
+      "additions": 20,
+      "deletions": 0,
+      "patch": "diff --git a/src/lib/format/date.ts b/src/lib/format/date.ts\nnew file mode 100644\nindex 0000000..4e8a2f1\n--- /dev/null\n+++ b/src/lib/format/date.ts\n@@ -0,0 +1,20 @@\n+// Date formatting moved out of lib/format so the number helpers can be used\n+// in the PDF worker, which has no Intl.DateTimeFormat locale data loaded.\n+\n+const DAY_MS = 86_400_000;\n+\n+export function formatDate(iso: string): string {\n+  return new Date(iso).toLocaleDateString(\"en-US\", {\n+    year: \"numeric\",\n+    month: \"short\",\n+    day: \"numeric\",\n+  });\n+}\n+\n+export function formatRelative(iso: string, now = Date.now()): string {\n+  const deltaDays = Math.round((now - Date.parse(iso)) / DAY_MS);\n+  if (deltaDays === 0) return \"today\";\n+  if (deltaDays === 1) return \"yesterday\";\n+  if (deltaDays < 0) return `in ${-deltaDays} days`;\n+  return `${deltaDays} days ago`;\n+}\n",
+      "language": "ts"
+    },
+    {
+      "path": "src/components/InvoiceRow.tsx",
+      "previous_path": null,
+      "status": "modified",
+      "additions": 2,
+      "deletions": 1,
+      "patch": "diff --git a/src/components/InvoiceRow.tsx b/src/components/InvoiceRow.tsx\nindex a0c4d11..f2b7e90 100644\n--- a/src/components/InvoiceRow.tsx\n+++ b/src/components/InvoiceRow.tsx\n@@ -1,16 +1,17 @@\n-import { formatDate, formatMoney, formatPercent } from \"@/lib/format\";\n+import { formatDate } from \"@/lib/format/date\";\n+import { formatMoney, formatPercent } from \"@/lib/format/number\";\n \n import type { Invoice } from \"@/lib/types\";\n \n export function InvoiceRow({ invoice }: { invoice: Invoice }) {\n   const overdue = invoice.dueAt < new Date().toISOString() && !invoice.paidAt;\n   return (\n     <tr data-overdue={overdue}>\n       <td className=\"font-mono\">{invoice.number}</td>\n       <td>{formatDate(invoice.issuedAt)}</td>\n       <td>{formatDate(invoice.dueAt)}</td>\n       <td className=\"text-right\">{formatMoney(invoice.totalCents)}</td>\n       <td className=\"text-right\">{formatPercent(invoice.taxRate)}</td>\n     </tr>\n   );\n }\n",
+      "language": "tsx"
+    },
+    {
+      "path": "src/lib/format/date.test.ts",
+      "previous_path": null,
+      "status": "added",
+      "additions": 29,
+      "deletions": 0,
+      "patch": "diff --git a/src/lib/format/date.test.ts b/src/lib/format/date.test.ts\nnew file mode 100644\nindex 0000000..c3d9b5e\n--- /dev/null\n+++ b/src/lib/format/date.test.ts\n@@ -0,0 +1,29 @@\n+import { describe, expect, it } from \"vitest\";\n+\n+import { formatDate, formatRelative } from \"./date\";\n+\n+const NOW = Date.parse(\"2026-08-20T12:00:00Z\");\n+\n+describe(\"formatDate\", () => {\n+  it(\"renders a short US date\", () => {\n+    expect(formatDate(\"2026-08-20T00:00:00Z\")).toBe(\"Aug 20, 2026\");\n+  });\n+});\n+\n+describe(\"formatRelative\", () => {\n+  it(\"says today for the same day\", () => {\n+    expect(formatRelative(\"2026-08-20T09:00:00Z\", NOW)).toBe(\"today\");\n+  });\n+\n+  it(\"says yesterday for one day back\", () => {\n+    expect(formatRelative(\"2026-08-19T12:00:00Z\", NOW)).toBe(\"yesterday\");\n+  });\n+\n+  it(\"counts days for older dates\", () => {\n+    expect(formatRelative(\"2026-08-10T12:00:00Z\", NOW)).toBe(\"10 days ago\");\n+  });\n+\n+  it(\"handles future dates instead of returning a negative count\", () => {\n+    expect(formatRelative(\"2026-08-23T12:00:00Z\", NOW)).toBe(\"in 3 days\");\n+  });\n+});\n",
+      "language": "ts"
+    }
+  ],
+  "expect": {
+    "risk_in": [
+      "low",
+      "medium"
+    ],
+    "must_mention": [],
+    "must_mention_any": [
+      "split",
+      "rename",
+      "move",
+      "extract"
+    ],
+    "must_not_mention": [
+      "As an AI"
+    ],
+    "min_visuals": 1,
+    "roles": {
+      "src/lib/format/number.ts": "core",
+      "src/lib/format/date.ts": "core",
+      "src/components/InvoiceRow.tsx": "supporting",
+      "src/lib/format/date.test.ts": "test"
+    }
+  }
+}

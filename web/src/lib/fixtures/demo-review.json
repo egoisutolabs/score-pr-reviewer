@@ -1,0 +1,151 @@
+{
+  "pr_url": "https://github.com/egoisutolabs/score/pull/107",
+  "status": "ready",
+  "progress": null,
+  "error": null,
+  "pr": {
+    "owner": "egoisutolabs",
+    "repo": "score",
+    "number": 107,
+    "url": "https://github.com/egoisutolabs/score/pull/107",
+    "title": "Adopt the Weco-optimized task briefing: defect prevention and requirement audit",
+    "body": "Ports the winning TASK.md template from a Weco optimization run into `TaskBriefingService.render()`.\r\n\r\n## Why\r\n\r\nReview-comment prevention was optimized against a dataset of 260 labeled review comments harvested from score and margincalc PR history. The prior template scored 0.22\u20130.26 prevention on train fixtures; this version scored 0.58 on held-out fixtures the optimizer never saw.\r\n\r\n## What changed\r\n\r\n- **Defect Surface Analysis** added to the explore step (claude workflow): pinpoint modified formulas/state transitions/business rules and list core invariants before writing.\r\n- **Defect Prevention checklist** (harness-agnostic, new section): error paths, validation, boundaries, numeric & logic, concurrency \u2014 ordered by measured defect-class frequency in the labeled corpus (error_path 53, validation 44, tests 42, boundary 36, concurrency 21, numeric 16).\r\n- **Test Integrity** now requires explicit edge-case coverage (zero-scale, empty collections, nulls, boundary values).\r\n- **Requirement Audit** added to self-review: confirm every constraint and example in the issue body is satisfied before committing.\r\n\r\nAll pinned policy wording (verification gate, commit cadence, capability-conditional tools, PR hygiene) is unchanged; existing tests pass unmodified. New tests pin the added sections.\r\n\r\n`make verify` green.\r\n\r\n",
+    "author": "gendev1",
+    "base_ref": "main",
+    "head_ref": "optimized-task-briefing",
+    "state": "MERGED",
+    "additions": 78,
+    "deletions": 5,
+    "changed_files": 2,
+    "created_at": "2026-08-25T06:18:33Z",
+    "labels": []
+  },
+  "files": [
+    {
+      "path": "packages/core/src/dispatch/task-briefing.service.test.ts",
+      "previous_path": null,
+      "status": "modified",
+      "additions": 51,
+      "deletions": 0,
+      "patch": "diff --git a/packages/core/src/dispatch/task-briefing.service.test.ts b/packages/core/src/dispatch/task-briefing.service.test.ts\nindex 0d005e4..badc623 100644\n--- a/packages/core/src/dispatch/task-briefing.service.test.ts\n+++ b/packages/core/src/dispatch/task-briefing.service.test.ts\n@@ -125,6 +125,57 @@ test(\"non-claude briefings carry no workflow section\", () => {\n   expect(markdown).toContain(\"Self-review the full diff\");\n });\n \n+test(\"defect prevention checklist is harness-agnostic and wired into analysis and self-review\", () => {\n+  const identity = createWorkIdentity(\"/worktrees\", issue());\n+  for (const agent of [claude, opencode]) {\n+    const markdown = new TaskBriefingService().render(issue(), identity, agent);\n+    const section = markdown.slice(\n+      markdown.indexOf(\"## Defect Prevention\"),\n+      markdown.indexOf(\"## Completion Instructions\"),\n+    );\n+    // The classes reviewers actually flag, each present as an explicit target.\n+    for (const cls of [\n+      \"Error Paths\",\n+      \"Validation\",\n+      \"Boundaries\",\n+      \"Numeric & Logic\",\n+      \"Concurrency\",\n+    ]) {\n+      expect(section).toContain(`**${cls}**`);\n+    }\n+    // Self-review audits the diff against the checklist, not just repo rules.\n+    const instructions = markdown.slice(markdown.indexOf(\"## Completion Instructions\"));\n+    expect(instructions).toContain(\"**Defect Prevention** checklist\");\n+  }\n+  // The claude workflow's analysis step names the same checklist.\n+  const markdown = new TaskBriefingService().render(issue(), identity, claude);\n+  expect(markdown).toContain(\"Defect Surface Analysis\");\n+});\n+\n+test(\"self-review demands a requirement audit against the issue body\", () => {\n+  const identity = createWorkIdentity(\"/worktrees\", issue());\n+  const markdown = new TaskBriefingService().render(issue(), identity, claude);\n+  const instructions = markdown.slice(markdown.indexOf(\"## Completion Instructions\"));\n+  const unwrapped = instructions.replace(/\\s+/g, \" \");\n+\n+  const audit = unwrapped.indexOf(\n+    \"Perform a **Requirement Audit**: confirm every constraint and example in the issue body is satisfied.\",\n+  );\n+  const commit = unwrapped.indexOf(\"Commit with a concise message\");\n+  expect(audit).toBeGreaterThan(-1);\n+  expect(commit).toBeGreaterThan(audit);\n+});\n+\n+test(\"test integrity requires explicit edge-case coverage\", () => {\n+  const identity = createWorkIdentity(\"/worktrees\", issue());\n+  const markdown = new TaskBriefingService().render(issue(), identity, claude);\n+  const unwrapped = markdown.replace(/\\s+/g, \" \");\n+\n+  expect(unwrapped).toContain(\n+    \"Ensure tests explicitly cover edge cases \u2014 zero-scale, empty collections, nulls, and boundary values \u2014 for all modified logic.\",\n+  );\n+});\n+\n test(\"briefing forbids opening a PR while required verification fails\", () => {\n   const identity = createWorkIdentity(\"/worktrees\", issue());\n   const markdown = new TaskBriefingService().render(issue(), identity, claude);\n",
+      "language": "ts"
+    },
+    {
+      "path": "packages/core/src/dispatch/task-briefing.service.ts",
+      "previous_path": null,
+      "status": "modified",
+      "additions": 27,
+      "deletions": 5,
+      "patch": "diff --git a/packages/core/src/dispatch/task-briefing.service.ts b/packages/core/src/dispatch/task-briefing.service.ts\nindex 396b3de..9a2cf14 100644\n--- a/packages/core/src/dispatch/task-briefing.service.ts\n+++ b/packages/core/src/dispatch/task-briefing.service.ts\n@@ -37,11 +37,16 @@ commits looks stranded. Push remains end-only, per Completion Instructions.\n Work in this order:\n \n 1. **Explore before writing.** Map the code this task touches: similar\n-   patterns, the owning feature folder, its tests. Prefer read-only\n-   subagents for broad sweeps. If the graphify skill is available, query the\n+   patterns, the owning feature folder, its tests. Perform a\n+   **Defect Surface Analysis**: pinpoint the exact formulas, state\n+   transitions, and business rules being modified, list the core invariants\n+   (rules that must never be broken), and identify where the Defect\n+   Prevention classes below apply. Prefer read-only subagents for broad\n+   sweeps. If the graphify skill is available, query the\n    repository's existing graph first (\\`graphify-out/\\` at the root); if the\n    graph is missing or stale, index the repository again.\n-2. **Implement this TASK.md end-to-end.**\n+2. **Implement this TASK.md end-to-end.** Apply the **Defect Prevention**\n+   checklist below; preserve every invariant identified in your analysis.\n 3. **Review until clean.** If the codex review skill is available, run it\n    over your diff and fix what it finds; repeat until it reports no new\n    issues. An unavailable tool skips that tool only \u2014 the self-review in\n@@ -87,7 +92,9 @@ failure \u2014 document that failure in the PR body and still run the rest.\n \n Write tests that would **fail** if the behavior is wrong. If you find yourself\n writing a test that passes regardless of the implementation, that is a bug in\n-the test \u2014 fix the test or flag it.\n+the test \u2014 fix the test or flag it. Ensure tests explicitly cover edge cases \u2014\n+zero-scale, empty collections, nulls, and boundary values \u2014 for all modified\n+logic.\n \n Do not paper over a bug to make tests green. If you discover a defect you\n cannot properly fix within this issue's scope:\n@@ -100,13 +107,28 @@ cannot properly fix within this issue's scope:\n    can see it before merging.\n 3. Do not silently work around it or write a test that hides it.\n \n+## Defect Prevention\n+\n+Address these specific classes to ensure a first-pass merge:\n+\n+- **Error Paths**: Ensure isolated failure containment and resource cleanup.\n+- **Validation**: Enforce strict input format and schema validation.\n+- **Boundaries**: Validate all data crossing interface or system boundaries.\n+- **Numeric & Logic**: Handle NaN/Inf, overflows, and division-by-zero. Verify\n+  calculation correctness, rounding, and signage; check for integer division\n+  bugs and precision loss. Account for zero/empty inputs and all logical\n+  branches.\n+- **Concurrency**: Prevent race conditions and unsafe interleavings.\n+\n ## Completion Instructions\n \n 1. Implement the issue end-to-end.\n 2. Run required verification.\n 3. Self-review the full diff hunk-by-hunk as if it were a stranger's PR,\n    against this repository's own review rules (\\`AGENTS.md\\` Code Review Rules\n-   and \\`INVARIANTS.md\\` where present). Fix everything you would flag in\n+   and \\`INVARIANTS.md\\` where present) and the **Defect Prevention** checklist.\n+   Perform a **Requirement Audit**: confirm every constraint and example in\n+   the issue body is satisfied. Fix everything you would flag in\n    review. If the review changed anything, re-run required verification over\n    the fixes before committing.\n 4. Commit with a concise message. Do not add Co-Authored-By or Claude-Session trailers.\n",
+      "language": "ts"
+    }
+  ],
+  "brief": {
+    "headline": "Adds a Defect Prevention checklist, defect-surface analysis, and requirement audit to the task briefing prompt",
+    "intent": "Ports an optimized TASK.md prompt into TaskBriefingService.render(): a new harness-agnostic \"## Defect Prevention\" section (five defect classes), a claude-workflow \"Defect Surface Analysis\" step that lists invariants before coding, an explicit edge-case rule for tests, and a \"Requirement Audit\" in the self-review step. The optimization targeted prevention of real review comments, measured against 260 labeled comments harvested from prior PRs. The change is wording-only \u2014 the rendered markdown string is the entire surface; no control flow, data, or schema changes.",
+    "risk": "low",
+    "risk_reasons": [
+      "Prompt text only: the rendered briefing string is the sole runtime surface; no auth, data, or concurrency code touched.",
+      "New and existing exact-string tests pin the template, and `make verify` is reported green in the description.",
+      "Long exact-sentence assertions (em-dashes included) make any future wording tweak test-breaking \u2014 brittle, but not a correctness risk.",
+      "Checklist order in code (Numeric & Logic before Concurrency) contradicts the description's frequency-based ordering claim."
+    ],
+    "change_map": [
+      {
+        "path": "packages/core/src/dispatch/task-briefing.service.ts",
+        "role": "core",
+        "summary": "Template string edits: Defect Surface Analysis in workflow step 1, checklist application in step 2, edge-case rule in Test Integrity, new '## Defect Prevention' section, Requirement Audit in self-review step 3."
+      },
+      {
+        "path": "packages/core/src/dispatch/task-briefing.service.test.ts",
+        "role": "test",
+        "summary": "Three new tests pinning the checklist for both harnesses, the requirement-audit-before-commit ordering, and the exact edge-case sentence."
+      }
+    ],
+    "visuals": [
+      {
+        "title": "Rendered briefing outline before vs after",
+        "caption": "The new section is harness-agnostic; the workflow and step-2 edits are claude-only.",
+        "refs": [
+          {
+            "path": "packages/core/src/dispatch/task-briefing.service.ts",
+            "line": 110
+          },
+          {
+            "path": "packages/core/src/dispatch/task-briefing.service.ts",
+            "line": 129
+          }
+        ],
+        "kind": "shape_diff",
+        "before": "rendered briefing\n  Workflow (claude only)\n    1. Explore before writing\n    2. Implement TASK.md end-to-end\n    3. Review until clean\n  Test Integrity\n    tests must fail if behavior is wrong\n  Completion Instructions\n    3. Self-review vs AGENTS.md / INVARIANTS.md\n    4. Commit (no trailers)",
+        "after": "rendered briefing\n  Workflow (claude only)\n    1. Explore + Defect Surface Analysis (formulas, state transitions, invariants)\n    2. Implement + apply Defect Prevention checklist, preserve invariants\n    3. Review until clean\n  Test Integrity\n    tests must fail if behavior is wrong\n    + edge cases: zero-scale, empty collections, nulls, boundary values\n  Defect Prevention (NEW \u2014 harness-agnostic)\n    Error Paths / Validation / Boundaries / Numeric & Logic / Concurrency\n  Completion Instructions\n    3. Self-review vs repo rules AND Defect Prevention checklist\n       + Requirement Audit: every issue constraint/example satisfied\n    4. Commit (no trailers)"
+      },
+      {
+        "title": "Description vs code: checklist ordering",
+        "caption": null,
+        "refs": [
+          {
+            "path": "packages/core/src/dispatch/task-briefing.service.ts",
+            "line": 117
+          }
+        ],
+        "kind": "callout",
+        "body": "The PR description says the checklist is ordered by labeled-corpus frequency (concurrency 21 > numeric 16), but the template lists Numeric & Logic before Concurrency. Cosmetic for a prompt list, but the claim and the code disagree.",
+        "tone": "info"
+      }
+    ],
+    "checklist": [
+      {
+        "item": "Verify `## Defect Prevention` sits in the harness-agnostic region so both claude and opencode briefings render it; the new loop test pins this for both agents.",
+        "path": "packages/core/src/dispatch/task-briefing.service.test.ts",
+        "line": 129,
+        "severity": "info",
+        "minutes": 2
+      },
+      {
+        "item": "Confirm the Defect Surface Analysis wording is inside the claude-only workflow and that non-claude agents still get a checklist reference via Completion Instructions.",
+        "path": "packages/core/src/dispatch/task-briefing.service.ts",
+        "line": 41,
+        "severity": "info",
+        "minutes": 2
+      },
+      {
+        "item": "Note the checklist order contradicts the PR description's frequency rationale: Numeric & Logic (16 labeled comments) is listed before Concurrency (21).",
+        "path": "packages/core/src/dispatch/task-briefing.service.ts",
+        "line": 117,
+        "severity": "info",
+        "minutes": 1
+      },
+      {
+        "item": "Confirm previously pinned policy wording (verification gate, commit cadence, trailer ban) is untouched \u2014 the diff only inserts text around it.",
+        "path": "packages/core/src/dispatch/task-briefing.service.ts",
+        "line": 107,
+        "severity": "info",
+        "minutes": 1
+      }
+    ],
+    "questions_for_author": [
+      "The checklist lists Numeric & Logic (16 labeled comments) before Concurrency (21), which inverts the frequency ordering the description cites \u2014 intentional or an oversight?",
+      "The new tests pin multi-clause exact sentences including em-dashes; is that brittleness accepted, or would key-phrase pins be preferred so future template tuning doesn't break tests?"
+    ],
+    "testing": "Three new tests pin the added wording: checklist presence for both claude and opencode, requirement-audit-before-commit ordering, and the exact edge-case sentence. Existing tests pass unmodified and `make verify` is green per the description (not run here). Untested: the claimed prevention lift \u2014 the 0.58 held-out score comes from the Weco optimization run, not this repo's CI, and no test covers the template's effect on real agent output.",
+    "verdict": "approve_with_nits",
+    "verdict_reason": "Wording-only template change fully pinned by tests; the only nit is the checklist order contradicting the description's frequency rationale.",
+    "time_plan": {
+      "budget_minutes": 15,
+      "read_first": [
+        {
+          "path": "packages/core/src/dispatch/task-briefing.service.ts",
+          "minutes": 6,
+          "why": "the entire change is this template string; read the four edited regions in diff order."
+        },
+        {
+          "path": "packages/core/src/dispatch/task-briefing.service.test.ts",
+          "minutes": 3,
+          "why": "confirm the exact-string pins match the template, including the whitespace-collapsed sentence assertions."
+        }
+      ],
+      "skip": []
+    }
+  }
+}

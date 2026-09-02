@@ -1,0 +1,25 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: npm ci --prefix web
+      - run: cd agent && uv sync
+      - run: npm run lint --prefix web
+      - run: cd web && npx tsc --noEmit
+      - run: cd agent && uv run ruff check .
+      - run: cd agent && uv run pytest -q
+      - run: cd web && npm run build

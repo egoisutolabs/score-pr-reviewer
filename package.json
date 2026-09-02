@@ -1,0 +1,15 @@
+{
+  "name": "score-pr-reviewer",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n web,agent -c blue,green -k \"npm run dev --prefix web\" \"cd agent && uv run main.py\"",
+    "dev:web": "npm run dev --prefix web",
+    "dev:agent": "cd agent && uv run main.py",
+    "check": "npm run lint --prefix web && npx --prefix web tsc -p web/tsconfig.json --noEmit && npm test --prefix web && cd agent && uv run ruff check . && uv run pytest -q",
+    "evals": "cd agent && uv run python -m evals.run",
+    "postinstall": "npm install --prefix web && cd agent && uv sync"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.4"
+  }
+}

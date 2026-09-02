@@ -1,0 +1,73 @@
+{
+  "name": "risky-migration",
+  "description": "A SQL migration drops users.legacy_email, the SQLAlchemy model loses the column and its fallback property logic, and the LEGACY_EMAIL_READS config flag is removed. The brief should say migration/drop, rate risk medium-or-high (irreversible data loss, deploy ordering), show at least one visual, and tag settings.py as config.",
+  "pr": {
+    "owner": "lumen-health",
+    "repo": "patient-portal",
+    "number": 2291,
+    "url": "https://github.com/lumen-health/patient-portal/pull/2291",
+    "title": "Drop users.legacy_email after the identity cutover",
+    "body": "The identity cutover finished on 2026-08-01 and `LEGACY_EMAIL_READS` has been off in prod for three weeks with no fallback hits in the logs.\n\n- migration 0047 drops the column and its index\n- `User.legacy_email` and the fallback in `contact_email` are removed\n- the flag is removed from settings\n\nDeploy order matters: ship the code first, then run the migration. Old pods with `LEGACY_EMAIL_READS=1` would 500 on every `contact_email` read once the column is gone.",
+    "author": "r-okafor",
+    "base_ref": "main",
+    "head_ref": "rokafor/drop-legacy-email",
+    "state": "OPEN",
+    "additions": 26,
+    "deletions": 9,
+    "changed_files": 3,
+    "created_at": "2026-08-27T16:18:04Z",
+    "labels": [
+      "database",
+      "cleanup"
+    ]
+  },
+  "files": [
+    {
+      "path": "db/migrations/0047_drop_users_legacy_email.sql",
+      "previous_path": null,
+      "status": "added",
+      "additions": 22,
+      "deletions": 0,
+      "patch": "diff --git a/db/migrations/0047_drop_users_legacy_email.sql b/db/migrations/0047_drop_users_legacy_email.sql\nnew file mode 100644\nindex 0000000..9a1d4c7\n--- /dev/null\n+++ b/db/migrations/0047_drop_users_legacy_email.sql\n@@ -0,0 +1,22 @@\n+-- Drops users.legacy_email now that every login goes through the identity\n+-- service (cutover completed 2026-08-01). The last reader, User.contact_email,\n+-- and the LEGACY_EMAIL_READS flag are removed in the same change.\n+--\n+-- Irreversible: the down migration restores the column but not its values.\n+-- Take the pre-migration snapshot (ops runbook DB-14) before applying in prod.\n+\n+-- migrate:up\n+BEGIN;\n+\n+DROP INDEX IF EXISTS users_legacy_email_idx;\n+\n+ALTER TABLE users\n+    DROP COLUMN legacy_email;\n+\n+COMMIT;\n+\n+-- migrate:down\n+ALTER TABLE users\n+    ADD COLUMN legacy_email VARCHAR(255) NULL;\n+\n+CREATE INDEX users_legacy_email_idx ON users (legacy_email);\n",
+      "language": "sql"
+    },
+    {
+      "path": "app/models/user.py",
+      "previous_path": null,
+      "status": "modified",
+      "additions": 2,
+      "deletions": 6,
+      "patch": "diff --git a/app/models/user.py b/app/models/user.py\nindex 5c0e7b2..d84a913 100644\n--- a/app/models/user.py\n+++ b/app/models/user.py\n@@ -5,5 +5,4 @@ from datetime import datetime\n from sqlalchemy import Boolean, DateTime, Integer, String\n from sqlalchemy.orm import Mapped, mapped_column\n \n-from app.config import settings\n from app.db import Base\n@@ -14,15 +13,12 @@ class User(Base):\n     id: Mapped[int] = mapped_column(Integer, primary_key=True)\n     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)\n-    legacy_email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)\n     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)\n     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)\n \n     @property\n     def contact_email(self) -> str:\n-        # Accounts migrated from the old portal kept their pre-cutover address in\n-        # legacy_email until the identity service confirmed the new one.\n-        if settings.LEGACY_EMAIL_READS and self.legacy_email:\n-            return self.legacy_email\n+        # Kept as a property so the 40-odd callers keep working; the legacy\n+        # fallback is gone and this is now just an alias for email.\n         return self.email\n \n     def __repr__(self) -> str:\n",
+      "language": "py"
+    },
+    {
+      "path": "config/settings.py",
+      "previous_path": null,
+      "status": "modified",
+      "additions": 2,
+      "deletions": 3,
+      "patch": "diff --git a/config/settings.py b/config/settings.py\nindex 2b7f9e4..71c30aa 100644\n--- a/config/settings.py\n+++ b/config/settings.py\n@@ -9,16 +9,15 @@\n def _flag(name: str, default: bool) -> bool:\n     raw = os.environ.get(name)\n     return default if raw is None else raw.lower() in {\"1\", \"true\", \"yes\"}\n \n \n @dataclass(frozen=True)\n class Settings:\n     DATABASE_URL: str = os.environ.get(\"DATABASE_URL\", \"postgresql://localhost/portal\")\n     IDENTITY_SERVICE_URL: str = os.environ.get(\"IDENTITY_SERVICE_URL\", \"http://identity:8080\")\n-    # Read the pre-cutover address from users.legacy_email when set. Turn off\n-    # only after the identity service has confirmed every migrated account.\n-    LEGACY_EMAIL_READS: bool = _flag(\"LEGACY_EMAIL_READS\", True)\n+    # LEGACY_EMAIL_READS was removed with users.legacy_email (migration 0047);\n+    # a deployment that still sets it in the environment is silently ignored.\n     SESSION_TTL_SECONDS: int = int(os.environ.get(\"SESSION_TTL_SECONDS\", \"3600\"))\n \n \n settings = Settings()\n",
+      "language": "py"
+    }
+  ],
+  "expect": {
+    "risk_in": [
+      "medium",
+      "high"
+    ],
+    "must_mention": [
+      "migration",
+      "drop"
+    ],
+    "must_mention_any": [],
+    "must_not_mention": [
+      "As an AI"
+    ],
+    "min_visuals": 1,
+    "roles": {
+      "db/migrations/0047_drop_users_legacy_email.sql": "core",
+      "app/models/user.py": "core",
+      "config/settings.py": "config"
+    }
+  }
+}
